@@ -1,0 +1,14 @@
+name: fmts
+channels:
+    - defaults
+    - conda-forge
+dependencies:
+- python=3.5
+- cython
+- pandas
+- jupyter
+- feather-format
+- fastparquet
+- python-snappy 
+- bcolz
+- seaborn
