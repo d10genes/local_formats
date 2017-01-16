@@ -9,6 +9,9 @@ dependencies:
 - jupyter
 - feather-format
 - fastparquet
-- python-snappy 
+- python-snappy
 - bcolz
 - seaborn
+- cython
+- pip:
+  - Brotli
