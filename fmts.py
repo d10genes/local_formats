@@ -5,10 +5,11 @@
 
 # import datetime as dt
 from importlib import reload
-import utils; reload(utils); from utils import Timer
+import utils; reload(utils); from utils import Timer, get_dtypes, mod_cols, add_nulls
 import itertools as it
 import os
 
+import uuid
 import numpy.random as nr
 from pandas import pandas as pd, DataFrame
 # from pandas.compat import lmap
@@ -34,82 +35,60 @@ with open('data/census_col_name_desc_mod.txt', 'r') as f:
     csd = f.read().splitlines()
 
 
-dforig = pd.read_csv('data/census-income.data', header=None).iloc[:, :-2]
-dforig.columns = [l.split()[-1].capitalize() for l in it.takewhile(bool, csd)]
+df = pd.read_csv('data/census-income.data', header=None).iloc[:, [1]].rename(columns={1: 'Low_card'}) #[['Hhdfmx']]
+# dforig.columns = [l.split()[-1].capitalize() for l in it.takewhile(bool, csd)]
 
 
 # In[ ]:
 
 # Get a few of each dtype
 # ctypes = [c for dtp, gdf in dforig.dtypes.reset_index(drop=0).groupby(0) for c in gdf['index'][:4]]
-get_dtypes = lambda df, tp='category': df.columns[df.dtypes == tp]
-ctypes = 'Hhdfmx Pemntvty Grinst Areorgn Marsupwt Divval Caploss'.split()
-dfs = dforig[ctypes].copy()
+df = df[['Low_card']].assign(Unq=[uuid.uuid4().hex for _ in range(len(df))])
+
+
+# In[ ]:
+
+df.apply(lambda x: x.nunique())
 
 
 # ### Nulls in String cols
-
-# In[ ]:
-
-def mod_cols(df, f=None, cols=None):
-    df = df.copy()
-    if cols is None:
-        cols = get_dtypes(df, object)
-        
-    for c in cols:
-        df[c] = f(df[c].copy())
-    return df
-
-def add_nulls(s, size=100):
-    rand_ixs = nr.choice(s.index, size=size, replace=False)
-    s.loc[rand_ixs] = None
-    return s
-
-
-nr.seed(0)
-dfsnulls = mod_cols(dfs, f=add_nulls)
-dfb = mod_cols(dfs, f=lambda x: x.str.encode('utf-8'))
-dfbnulls = mod_cols(dfb, f=add_nulls)
-
-
-# In[ ]:
-
-low_card = dfs[['Hhdfmx']]
-
-
-# In[ ]:
-
-f = lambda x: x
-f
-
-
-# In[ ]:
-
-def gen_diff_types(df):
-    "df with str dtype"
-    dfsnulls = mod_cols(df, f=add_nulls)
-    dfb = mod_cols(df, f=lambda x: x.str.encode('utf-8'))
-    dfbnulls = mod_cols(dfb, f=add_nulls)
-    all_dfs = lambda: None
-    all_dfs.__dict__.update(dict(
-        dfs=df, 
-        dfsnulls=dfsnulls,
-        dfb=dfb,
-        dfbnulls=dfbnulls,
-    ))
-    return all_dfs
-    
-gen_diff_types()
-
-
+# 
 # ### Convert string cols to categorical
 
 # In[ ]:
 
 tocat = lambda x: x.astype('category')
 
-dfc = mod_cols(dfs, f=tocat)
-dfcnulls = mod_cols(dfsnulls, f=tocat)
+# dfc = mod_cols(dfs, f=tocat)
+# dfcnulls = mod_cols(dfsnulls, f=tocat)
+
+
+# 
+# dfsnulls = mod_cols(dfs, f=add_nulls)
+# dfb = mod_cols(dfs, f=lambda x: x.str.encode('utf-8'))
+# dfbnulls = mod_cols(dfb, f=add_nulls)
+
+# In[ ]:
+
+def gen_diff_types(df):
+    "df with str dtype"
+    all_dfs = lambda: None
+    dct = all_dfs.__dict__
+    dct.update(dict(
+        dfs=df, 
+        dfsnulls=mod_cols(df, f=add_nulls),
+        dfb=mod_cols(df, f=lambda x: x.str.encode('utf-8')),
+        dfc=mod_cols(df, f=tocat),
+    ))
+    dct.update(dict(
+        dfbnulls=mod_cols(all_dfs.dfb, f=add_nulls),
+        dfcnulls=mod_cols(all_dfs.dfsnulls, f=tocat),
+    ))
+    return all_dfs
+    
+nr.seed(0)
+dflo = gen_diff_types(df[['Low_card']])
+dfunq = gen_diff_types(df[['Unq']])
 
 
 # ### Convert string to categorical
@@ -117,9 +96,6 @@ dfcnulls = mod_cols(dfsnulls, f=tocat)
 # In[ ]:
 
 from collections import OrderedDict
-
-
-# In[ ]:
 
 def summarize_types(df):
     return DataFrame(OrderedDict([('Dtypes', df.dtypes), ('Nulls', df.isnull().sum())]))
@@ -133,9 +109,9 @@ ix = pd.MultiIndex.from_product([
 
 d = DataFrame(pd.concat(map(
     summarize_types,
-    [dfs, dfsnulls,
-     dfc, dfcnulls,
-     dfb, dfbnulls,
+    [dflo.dfs, dflo.dfsnulls,
+     dflo.dfc, dflo.dfcnulls,
+     dflo.dfb, dflo.dfbnulls,
     ]
     ), axis=1))
 d.columns = ix
@@ -176,7 +152,6 @@ d
 
 import fastparquet
 import feather
-
 from functools import partial as part
 
 
@@ -256,22 +231,11 @@ has_nulls=False,
 
 # In[ ]:
 
-obj_col
-
-
-# In[ ]:
-
-v
-
-
-# In[ ]:
-
-(dfsnulls[obj_col] == dfsnulls[obj_col])
-
-
-# In[ ]:
-
 def get_obj_type(df, as_str=True):
+    """Get type of first non-null element in first column
+    with object dtype. With `as_str` convert to arg for
+    `fastparquet.write`'s `object_encoding` param.
+    """
     [obj_col, *_] = get_dtypes(df, object)
     s = df[obj_col]
     nonull_val = s[s == s].values[0]
@@ -279,28 +243,12 @@ def get_obj_type(df, as_str=True):
         return enc_dct[type(nonull_val)]
     return type(nonull_val)
 
-
-# In[ ]:
-
-
+enc_dct = {str: 'utf8', bytes: 'bytes'}
 
 
 # In[ ]:
 
-enc_dct[get_obj_type(dfs)]
-
-
-# In[ ]:
-
-get_obj_type(dfb)
-
-
-# In[ ]:
-
-for v in dfsnulls[obj_col]:
-    if v != v:
-        print('!')
-        break
+cols = ['Low_card', 'Unq']
 
 
 # In[ ]:
@@ -313,7 +261,7 @@ def stack_results(res):
     ], ignore_index=True)
 
 
-def run_tests(df, asdf=True, cats=None):
+def run_writers(df, asdf=True, cats=None):
     obj_tp = get_obj_type(df) if cats is None else 'infer'
         
     pqr = pq_reader(categories=cats)
@@ -321,8 +269,10 @@ def run_tests(df, asdf=True, cats=None):
         dict(zip(cats, it.repeat('category')))
     )
     res = [
-        try_bench('test/t.csv', df, part(DataFrame.to_csv, index=None),
-              part(pd.read_csv, dtype=csv_dtype)) + ('Csv',),
+        try_bench('test/t.csv', df,
+                  DataFrame.to_csv,
+#                   part(DataFrame.to_csv, index=None),
+              part(pd.read_csv, dtype=csv_dtype, index_col=0)) + ('Csv',),
         try_bench('test/t.fth', df, feather.write_dataframe, feather.read_dataframe) + ('Feather',),
         try_bench('test/t_snap.parq', df, pq_writer(compression='SNAPPY'), pqr) + ('Pq-Snappy',),
         try_bench('test/t_snap_utf8.parq', df, pq_writer(compression='SNAPPY', object_encoding=obj_tp), pqr) + ('Pq-Snappy-enc',),
@@ -330,7 +280,7 @@ def run_tests(df, asdf=True, cats=None):
                   pq_writer(get_lens=True, compression='SNAPPY'),
                   pqr) + ('Pq-Snappy-ft',),
         try_bench('test/t_unc.parq', df, pq_writer(compression='UNCOMPRESSED'), pqr) + ('Pq-Uncompressed',),
-        try_bench('test/t_gzip.parq', df, pq_writer(compression='GZIP'), pqr) + ('Pq-Gzip',),
+#         try_bench('test/t_gzip.parq', df, pq_writer(compression='GZIP'), pqr) + ('Pq-Gzip',),
     ]
     if asdf:
         return todf(res)
@@ -342,55 +292,65 @@ todf = lambda x: DataFrame(x, columns=['Write_time', 'Read_time', 'Mb', 'Fmt'])
 
 # In[ ]:
 
-res
+def run_dfs(dfholder):
+    d = dfholder
+    global res, resnull, resc, rescnull, resb, resbnull
+    res = run_writers(d.dfs, asdf=1, cats=None)
+    print('rnull!')
+    resnull = run_writers(d.dfsnulls, asdf=1, cats=None)
+
+    resc = run_writers(d.dfc, asdf=1, cats=cols)
+    rescnull = run_writers(d.dfcnulls, asdf=1, cats=cols)
+
+    resb = run_writers(d.dfb, asdf=1, cats=None)
+    resbnull = run_writers(d.dfbnulls, asdf=1, cats=None)
+    
+#     allres = stack_results([
+#         (res, 'Str', 'False'),
+#         (resnull, 'Str', 'True'),
+#         (resc, 'Cat', 'False'),
+#         (rescnull, 'Cat', 'True'),
+#         (resb, 'Byte', 'False'),
+#         (resbnull, 'Byte', 'True'),
+#     ])
+    allres = stack_results([
+        (res, 'Str', False),
+        (resnull, 'Str', True),
+        (resc, 'Cat', False),
+        (rescnull, 'Cat', True),
+        (resb, 'Byte', False),
+        (resbnull, 'Byte', True),
+    ])
+    return allres
 
 
 # In[ ]:
 
-cats = get_dtypes(dfc).tolist()
-assert cats
+reslo = run_dfs(dflo)
 
 
 # In[ ]:
 
+resunq = run_dfs(dfunq)
 
 
-
-# In[ ]:
-
-dfs[:2
-   ]
-
-
-# In[ ]:
-
-res = run_tests(dfs, asdf=1, cats=None)
-resnull = run_tests(dfsnulls, asdf=1, cats=None)
-
-
-# In[ ]:
-
-resc = run_tests(dfc, asdf=1, cats=cats)
-rescnull = run_tests(dfcnulls, asdf=1, cats=cats)
-
-
-# In[ ]:
-
-resb = run_tests(dfb, asdf=1, cats=None)
-resbnull = run_tests(dfbnulls, asdf=1, cats=None)
-
-
-# In[ ]:
-
-allres = stack_results([
-    (res, 'Str', 'False'),
-    (resnull, 'Str', 'True'),
-    (resc, 'Cat', 'False'),
-    (rescnull, 'Cat', 'True'),
-    (resb, 'Byte', 'False'),
-    (resbnull, 'Byte', 'True'),
-])
-
+# res = run_tests(dfs, asdf=1, cats=None)
+# resnull = run_tests(dfsnulls, asdf=1, cats=None)
+# 
+# resc = run_tests(dfc, asdf=1, cats=cats)
+# rescnull = run_tests(dfcnulls, asdf=1, cats=cats)
+# 
+# resb = run_tests(dfb, asdf=1, cats=None)
+# resbnull = run_tests(dfbnulls, asdf=1, cats=None)
+# 
+# allres = stack_results([
+#     (res, 'Str', 'False'),
+#     (resnull, 'Str', 'True'),
+#     (resc, 'Cat', 'False'),
+#     (rescnull, 'Cat', 'True'),
+#     (resb, 'Byte', 'False'),
+#     (resbnull, 'Byte', 'True'),
+# ])
 
 # ## Plot
 
@@ -423,11 +383,6 @@ def plot_times_size(res):
 
 # In[ ]:
 
-
-
-
-# In[ ]:
-
 plot_times_size(res)
 
 
@@ -443,7 +398,9 @@ plot_times_size(res)
 
 # In[ ]:
 
-NUDGE = .035
+from functools import partial
+# import numpy as np
+NUDGE = .005
 
 def s2df(ss):
     return DataFrame(OrderedDict([(s.name, s) for s in ss]))
@@ -454,28 +411,23 @@ def label(x, y, txt):
     for i, row in df.iterrows():
         ax.text(row[x] + NUDGE, row[y] + NUDGE, str(row[txt]))
         
-def scatter(x=None, y=None, s=None):
-    p = plt.scatter(x, y, s=s * 2)
+def scatter(x=None, y=None, s=None, sz_fact=30):
+    p = plt.scatter(x, y, s=s * sz_fact, alpha=.25)
     plt.xlabel(x)
     plt.ylabel(y)
     # plt.legend()
     
-def plot_scatter2(x, y, size, lab=None, ax=None, color=None):
-    scatter(x=x, y=y, s=size)
+def plot_scatter2(x, y, size, lab=None, ax=None, sz_fact=30, color=None):
+#     print('size={}\t lab={}\t ax={}\t sz_fact={}\t color={}\t'.format(size, lab, ax, sz_fact, color))
+    scatter(x=x, y=y, s=size, sz_fact=sz_fact)
     # scatter_df(res, x=x, y=y, size=s)
     label(x, y, lab)
-
-
-# In[ ]:
 
 def outlier_val(s, nsd=2.5):
     s = s.dropna()
     m = s.mean()
     sd = s.std()
     return m + nsd * sd
-
-
-# In[ ]:
 
 def trim_outliers(df, cs=[], nsd=2.5):
     for c in cs:
@@ -484,30 +436,10 @@ def trim_outliers(df, cs=[], nsd=2.5):
         df = df[s <= v]
     return df
 
-
-# In[ ]:
-
-s = allres.Write_time.dropna()
-
-
-# In[ ]:
-
-import numpy as np
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-np.percentile(s, 90)
+def part(f, *a, **kw):
+    wrapper = partial(f, *a, **kw)
+    wrapper.__module__ = '__main__'
+    return wrapper
 
 
 # In[ ]:
@@ -517,18 +449,24 @@ allres.ix[np.setdiff1d(allres.index, _allres.index)].sort_values(['Fmt'], ascend
 
 # In[ ]:
 
-# _allres = trim_outliers(allres, cs=['Write_time', 'Read_time'])
-_allres = allres.dropna(axis=0)
+comp_rat.plot.scatter(x='Read_time', y='Compression_ratio')
+
+
+# In[ ]:
+
+_allres = reslo.dropna(axis=0)
 g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
-# g.map(plot_scatter2, 'Read_time', 'Write_time', 'Mb', 'Fmt')
 g.map(plot_scatter2, 'Write_time', 'Read_time', 'Mb', 'Fmt')
 
 
 # In[ ]:
 
-g = sns.FacetGrid(allres.assign(One=10), row='Enc', col='Null', aspect=1.2, size=4)
-# g.map(plot_scatter2, 'Read_time', 'Write_time', 'Mb', 'Fmt')
-g.map(plot_scatter2, 'Mb', 'Read_time', 'One', 'Fmt')
+reslo.Null == 'True'
+
+
+# In[ ]:
+
+reslo.query('Null').sort_values(['Enc', 'Read_time'], ascending=True)
 
 
 # In[ ]:
@@ -538,7 +476,33 @@ g.map(plot_scatter2, 'Mb', 'Read_time', 'One', 'Fmt')
 
 # In[ ]:
 
-allres[:2]
+fastparquet.write()
+
+
+# In[ ]:
+
+_allres = resunq.dropna(axis=0)
+g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
+g.map(part(plot_scatter2, sz_fact=10), 'Write_time', 'Read_time', 'Mb', 'Fmt')
+
+
+# - CSV suffers dramatically in speed on categorical encodings
+# - Low cardinality strings
+#     - Everything besides CSV has similar speed characteristics for categoricals
+# - Unique strings
+#     
+# - Feather is really hard to beat in speed, except for unique byte strings with nulls (and [crashes for bytes with no nulls in the column](https://github.com/wesm/feather/issues/283))
+# 
+# 
+# My personal takeaways:
+# - For columns with lots of redundant strings, convert to categorical if possible and use fastparquet with Snappy
+# - Otherwise, try to use bytes instead of strings and use `fastparquet.write`'s `fixed_text` argument
+
+# In[ ]:
+
+comp_rat = reslo.assign(Compression_ratio=lambda x: x.Mb.max() / x.Mb).query('Fmt != "Pq-Gzip"')
+sns.stripplot(x="Fmt", y="Compression_ratio", data=comp_rat, jitter=True)
+plt.xticks(rotation=75);
 
 
 # In[ ]:
