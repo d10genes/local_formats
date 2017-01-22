@@ -114,26 +114,7 @@ import bcolz
 
 # In[ ]:
 
-tolist = lambda x: x.tolist()
-to_unicode = lambda x: x.values.astype('U')
 
-def write_bcolz(df, fn=None, asdf=True, convert_series=None):
-    if asdf:
-        ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
-    else:
-        transform = convert_series or z.identity
-        cs = [transform(col) if (col.dtype == 'O') else col for _, col in df.iteritems()]
-        ct = bcolz.ctable(columns=cs, names=list(df), rootdir=fn)
-    return ct
-
-
-def read_bcolz(fn):
-    ct = bcolz.open(fn, mode='r')
-    return DataFrame(ct[:])
-
-mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
-# mk_bcolz_reader = lambda **_: read_bcolz
-# read_bcolz(fn)[:2]
 
 
 # In[ ]:
@@ -258,6 +239,35 @@ def try_bench(*a, **kw):
 
 # In[ ]:
 
+import shutil
+
+
+# In[ ]:
+
+tolist = lambda x: x.tolist()
+to_unicode = lambda x: x.values.astype('U')
+
+def write_bcolz(df, fn=None, asdf=True, convert_series=None):
+    if asdf:
+        ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
+    else:
+        transform = convert_series or z.identity
+        cs = [transform(col) if (col.dtype == 'O') else col for _, col in df.iteritems()]
+        ct = bcolz.ctable(columns=cs, names=list(df), rootdir=fn)
+    return ct
+
+
+def read_bcolz(fn):
+    ct = bcolz.open(fn, mode='r')
+    return DataFrame(ct[:])
+
+mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
+# mk_bcolz_reader = lambda **_: read_bcolz
+# read_bcolz(fn)[:2]
+
+
+# In[ ]:
+
 def stack_results(res):
     return pd.concat([
         (df.assign(Enc=type)
@@ -274,38 +284,56 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test'):
         dict(zip(cats, it.repeat('category')))
     )
     
-    os.rmdir(dirname)
+    if path.exists(dirname):
+        shutil.rmtree(dirname)
     os.mkdir(dirname)
     dir = lambda x: path.join(dirname, x)
     
-    csv_reader = partial(pd.read_csv, dtype=csv_dtype, index_col=0))
-    res = [
-        try_bench(dir('t.csv'), df, DataFrame.to_csv,
-              csv_reader + ('Csv',),
-        try_bench(dir('t.fth'), df, feather.write_dataframe, feather.read_dataframe) + ('Feather',),
-        try_bench(dir('t_snap.parq'), df, pq_writer(compression='SNAPPY'), pqr) + ('Pq-Snappy',),
-        try_bench(dir('t_snap_utf8.parq'), df, pq_writer(compression='SNAPPY', object_encoding=obj_tp), pqr
-                 ) + ('Pq-Snappy-enc',),
-        try_bench(dir('t_snap_f.parq'), df,
-                  pq_writer(get_lens=True, compression='SNAPPY'),
-                  pqr) + ('Pq-Snappy-ft',),
-        try_bench(dir('t_unc.parq'), df, pq_writer(compression='UNCOMPRESSED'), pqr
-                 ) + ('Pq-Uncompressed',),
-        
+    csv_reader = partial(pd.read_csv, dtype=csv_dtype, index_col=0)
+    pq_write_enc = pq_writer(compression='SNAPPY', object_encoding=obj_tp)
+    blosc_df_wrt = mk_bcolz_writer(asdf=True)
+    blosc_uni_wrt = mk_bcolz_writer(asdf=False, convert_series=to_unicode)
+    blosc_lst_wrt = mk_bcolz_writer(asdf=False, convert_series=tolist)
+    res = {
+        'Csv': try_bench(dir('t.csv'), df, DataFrame.to_csv, csv_reader),
+#         'Bcolz-df': try_bench(dir('t_df.blsc'), df, blosc_df_wrt, read_bcolz),
+#         'Bcolz-uni': try_bench(dir('t_uni.blsc'), df, blosc_uni_wrt, read_bcolz),
+#         'Bcolz-lst': try_bench(dir('t_lst.blsc'), df, blosc_lst_wrt, read_bcolz),
+#         'Feather': try_bench(dir('t.fth'), df, feather.write_dataframe, feather.read_dataframe),
+#         'Pq-Snappy': try_bench(dir('t_snap.parq'), df, pq_writer(compression='SNAPPY'), pqr),
+#         'Pq-Snappy-enc': try_bench(dir('t_snap_utf8.parq'), df, pq_write_enc, pqr),
+#         'Pq-Snappy-ft': try_bench(dir('t_snap_f.parq'), df, pq_writer(get_lens=True, compression='SNAPPY'), pqr),
+#         'Pq-Uncompressed': try_bench(dir('t_unc.parq'), df, pq_writer(compression='UNCOMPRESSED'), pqr),
+    }
         # try_bench('/tmp/test/t_gzip.parq', df, pq_writer(compression='GZIP'), pqr
         # ) + ('Pq-Gzip',),  # <= slow writes
-    ]
     if asdf:
         return todf(res)
     else:
         return res
 
-todf = lambda x: DataFrame(x, columns=['Write_time', 'Read_time', 'Mb', 'Fmt'])
+def todf(x):
+    d = DataFrame(x).T
+    d.columns = ['Write_time', 'Read_time', 'Mb']
+    d.index.name = 'Fmt'
+    return d.reset_index(drop=0)
+
+# todf = lambda x: DataFrame(x, columns=['Write_time', 'Read_time', 'Mb', 'Fmt'])
 
 
 # In[ ]:
 
+res = run_writers(df, asdf=True)
 
+
+# In[ ]:
+
+res
+
+
+# In[ ]:
+
+res
 
 
 # In[ ]:
