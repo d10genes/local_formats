@@ -112,67 +112,85 @@ import bcolz
 # %time bu2 = bcolz.carray(df['Unq'].tolist())
 # %time b2 = bcolz.ctable.fromdataframe(df[['Unq']])
 
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-
-
-
 # ### Bytes | categorical | strings & Nulls | Nonulls
 # This function returns a container with combinations of the different string data encodings, and some with nulls randomly inserted, since this can have a big effect on parquet's performance.
 
+# def gen_diff_types(df):
+#     "df with str dtype"
+#     all_dfs = lambda: None
+#     dct = all_dfs.__dict__
+#     dct.update(dict(
+#         dfs=df, 
+#         dfsnulls=(df, f=add_nulls),
+#         dfb=mod_cols(df, f=lambda x: x.str.encode('utf-8')),
+#         dfc=mod_cols(df, f=tocat),
+#     ))
+#     dct.update(dict(
+#         dfbnulls=mod_cols(all_dfs.dfb, f=add_nulls),
+#         dfcnulls=mod_cols(all_dfs.dfsnulls, f=tocat),
+#     ))
+#     return all_dfs
+#     
+# tocat = lambda x: x.astype('category')
+# nr.seed(0)
+# dflo = gen_diff_types(df[['Low_card']])
+# dfunq = gen_diff_types(df[['Unq']])
+
 # In[ ]:
 
-def gen_diff_types(df):
-    "df with str dtype"
-    all_dfs = lambda: None
-    dct = all_dfs.__dict__
-    dct.update(dict(
-        dfs=df, 
-        dfsnulls=mod_cols(df, f=add_nulls),
-        dfb=mod_cols(df, f=lambda x: x.str.encode('utf-8')),
-        dfc=mod_cols(df, f=tocat),
-    ))
-    dct.update(dict(
-        dfbnulls=mod_cols(all_dfs.dfb, f=add_nulls),
-        dfcnulls=mod_cols(all_dfs.dfsnulls, f=tocat),
-    ))
-    return all_dfs
-    
-tocat = lambda x: x.astype('category')
-nr.seed(0)
-dflo = gen_diff_types(df[['Low_card']])
-dfunq = gen_diff_types(df[['Unq']])
+def new_cols(df):
+    c = df.columns[0]
+    s = df[c]
+    df = df.assign(
+        # Str=s, 
+        Str_nls=lambda x: add_nulls(x[c]),
+        Bytes=lambda x: x[c].str.encode('utf-8'),
+        Cat=lambda x: tocat(x[c])
+    ).assign(
+        Bytes_nls=lambda x: add_nulls(x['Bytes']),
+        Cat_nls=lambda x: add_nulls(x['Cat']),
+    )
+    return df.rename(columns={c: 'Str'})
 
+
+# In[ ]:
+
+new_cols(df[['Unq']])[:3]
+
+
+# In[ ]:
+
+d_txf = new_cols(df[['Unq']])
+
+
+# In[ ]:
+
+DataFrame({'Nulls': d_txf.isnull().sum(), 'Dtypes': d_txf.dtypes})
+
+
+# (d_txf.Cat_nls == d_txf.Cat_nls).mean()
 
 # Here's a description:
 
-# In[ ]:
-
-def summarize_types(df):
-    return DataFrame(OrderedDict([('Dtypes', df.dtypes), ('Nulls', df.isnull().sum())]))
-
-
-ix = pd.MultiIndex.from_product([
-    ['Str', 'Str_null',
-     'Cat', 'Cat_null',
-     'Bytes', 'Bytes_null'],
-    ['Dtypes', 'Nulls']])
-
-d = DataFrame(pd.concat(map(
-    summarize_types,
-    [dflo.dfs, dflo.dfsnulls,
-     dflo.dfc, dflo.dfcnulls,
-     dflo.dfb, dflo.dfbnulls,
-    ]
-    ), axis=1))
-d.columns = ix
-d
-
+# def summarize_types(df):
+#     return DataFrame(OrderedDict([('Dtypes', df.dtypes), ('Nulls', df.isnull().sum())]))
+# 
+# 
+# ix = pd.MultiIndex.from_product([
+#     ['Str', 'Str_null',
+#      'Cat', 'Cat_null',
+#      'Bytes', 'Bytes_null'],
+#     ['Dtypes', 'Nulls']])
+# 
+# d = DataFrame(pd.concat(map(
+#     summarize_types,
+#     [dflo.dfs, dflo.dfsnulls,
+#      dflo.dfc, dflo.dfcnulls,
+#      dflo.dfb, dflo.dfbnulls,
+#     ]
+#     ), axis=1))
+# d.columns = ix
+# d
 
 # ## Parquet writer/reader
 # Here are some helper functions to read and write with fastparquet using different options
@@ -215,7 +233,7 @@ def bench(fn, df, writer, reader, desc=''):
     tread.end()
 
     assert df.shape == rdf.shape, '{} != {}'.format(df.shape, rdf.shape)
-    assert (df.dtypes == rdf.dtypes).all(), '{}\n\n != \n\n{}'.format(df.dtypes, rdf.dtypes)
+    # assert (df.dtypes == rdf.dtypes).all(), '{}\n\n != \n\n{}'.format(df.dtypes, rdf.dtypes)
     
     return twrite.time, tread.time, getsize(fn) / 10**6
 
@@ -239,7 +257,116 @@ def try_bench(*a, **kw):
 
 # In[ ]:
 
-import shutil
+def ff(a=1):
+    ff.a = 1
+    return 2
+
+ff2 = part(ff, a=2)
+ff2()
+
+
+# In[ ]:
+
+ff2.func.a
+
+
+# In[ ]:
+
+import enum
+
+class BEnc(enum.Enum):
+    "Bcolz encoding"
+    df = 1
+    list = 3
+    utf8 = 2
+    
+class StrEnc(enum.Enum):
+    "Series encoding for string col"
+    str = 2
+    cat = 1
+    byte = 3
+
+
+# In[ ]:
+
+def feasible_bcolz(method=None, str_enc=None, null=None):
+    "Some bcolz settings are unbearably slow. "
+    assert isinstance(method, BEnc), 'method must be BEnc'
+    assert isinstance(str_enc, StrEnc), 'str_enc must be StrEnc'
+    assert null in {True, False}, 'null must be bool'
+    
+    if method == BEnc.df:
+        return (str_enc, null) == (StrEnc.str, False)
+    elif method == BEnc.list:
+        return (str_enc in {StrEnc.str, StrEnc.byte}) and (not null)
+    elif method == BEnc.utf8:
+        return str_enc != StrEnc.cat
+    raise TypeError("Shouldn't reach here")
+    
+    
+feasible_bcolz(method=BEnc.df, str_enc=StrEnc.str, null=False)
+
+
+# combos = [
+#     (benc, strenc, null)
+#     for benc in BEnc.__members__.values()
+#     for strenc in StrEnc.__members__.values()
+#     for null in [True, False]
+# 
+# ]
+# 
+# bads = slow.sort_values(['Fmt', 'Enc', 'Null',], ascending=True).copy()
+# bads.Fmt = bads.Fmt.map({'Bcolz-df': BEnc.df, 'Bcolz-lst': BEnc.list, 'Bcolz-uni': BEnc.utf8})
+# bads.Enc = bads.Enc.map({'Str': StrEnc.str, 'Cat': StrEnc.cat, 'Byte': StrEnc.byte,})
+# 
+# bad_combos = list(bads['Fmt Enc Null'.split()].itertuples(index=False, name=None))
+# 
+# for combo in combos:
+#     method, str_enc, null = combo
+#     inbad = combo in bad_combos
+#     feas = feasible_bcolz(method=method, str_enc=str_enc, null=null)
+#     assert inbad != feas
+# #     print(inbad, feas)
+# #     if inbad == feas:
+# #         print(combo)
+#     
+
+# In[ ]:
+
+def todf(x):
+    d = DataFrame(x).T
+    d.columns = ['Write_time', 'Read_time', 'Mb']
+    d.index.name = 'Fmt'
+    return d.reset_index(drop=0)
+
+def stack_results(res):
+    return pd.concat([
+        (df.assign(Enc=type)
+           .assign(Null=null))
+        for df, type, null in res
+    ], ignore_index=True)
+
+
+# In[ ]:
+
+def null_type(s):
+    n = (~(s == s)).sum() > 0
+    t1 = s.dtype
+    if t1 == object:
+        tp = type(s.iloc[0])
+        return n, tp
+    return n, t1
+
+
+# In[ ]:
+
+TODO: this check before calling `write_bcolz`
+if not feasible_bcolz( method=method, null=null, str_enc=str_enc):
+        na
+        return 
+
+
+nan = np.float('nan')
 
 
 # In[ ]:
@@ -247,15 +374,17 @@ import shutil
 tolist = lambda x: x.tolist()
 to_unicode = lambda x: x.values.astype('U')
 
-def write_bcolz(df, fn=None, asdf=True, convert_series=None):
-    if asdf:
+    
+@check_args(method=BEnc, str_enc=StrEnc, null=bool)
+def write_bcolz(df, fn=None, method=BEnc.df, null=null, str_enc=str_enc):    
+    if method == BEnc.df:
         ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
     else:
-        transform = convert_series or z.identity
-        cs = [transform(col) if (col.dtype == 'O') else col for _, col in df.iteritems()]
+        converter = {BEnc.list: tolist , BEnc.utf8: to_unicode}[method]
+        cs = [converter(col) if (col.dtype == 'O')
+              else col for _, col in df.iteritems()]
         ct = bcolz.ctable(columns=cs, names=list(df), rootdir=fn)
     return ct
-
 
 def read_bcolz(fn):
     ct = bcolz.open(fn, mode='r')
@@ -268,15 +397,56 @@ mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
 
 # In[ ]:
 
-def stack_results(res):
-    return pd.concat([
-        (df.assign(Enc=type)
-           .assign(Null=null))
-        for df, type, null in res
-    ], ignore_index=True)
+d_txf[:2]
 
 
-def run_writers(df, asdf=True, cats=None, dirname='/tmp/test'):
+# In[ ]:
+
+from functools import wraps
+
+def check_args(**kw_types):
+    def deco(f):
+        @wraps(f)
+        def wrapper(*a, **kwds):
+            for argname, type_ in kw_types.items():
+                if argname not in kwds:
+                    print('Warning, `{}` not explicitly passed'.format(argname))
+                    continue
+                assert isinstance(kwds[argname], type_), '{} must be {}'.format(argname, type_)
+            return f(*a, **kwds)
+        return wrapper
+    return deco
+
+@check_args(str_enc=StrEnc, null=bool)
+def ff(df, str_enc=None, null=None):
+    return 1
+    
+ff(1, str_enc=StrEnc.byte)
+
+
+# In[ ]:
+
+def f(a=1, b=2, c=3):
+    return a, b, c
+
+f1 = part(f, b=9)
+f2 = part(f1, c=4)
+f2()
+
+
+# In[ ]:
+
+@check_args(str_enc=StrEnc, null=bool)
+def run_writers(df, asdf=True, cats=None, dirname='/tmp/test', str_enc=None, null=False):
+    """For given df (should be single column), run series of
+    reads/writes
+    """
+    assert isinstance(method, BEnc), 'method must be BEnc'
+    assert isinstance(str_enc, StrEnc), 'str_enc must be StrEnc'
+    assert null in {True, False}, 'null must be bool'
+
+    null_, _ = null_type(df.iloc[:, 0])
+    assert null_ == null
     obj_tp = get_obj_type(df) if cats is None else 'infer'
         
     pqr = pq_reader(categories=cats)
@@ -285,40 +455,40 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test'):
     )
     
     if path.exists(dirname):
+        print('Deleting', dirname)
         shutil.rmtree(dirname)
     os.mkdir(dirname)
     dir = lambda x: path.join(dirname, x)
     
+#     method=BEnc.df, null=null, str_enc=str_enc
+    
     csv_reader = partial(pd.read_csv, dtype=csv_dtype, index_col=0)
     pq_write_enc = pq_writer(compression='SNAPPY', object_encoding=obj_tp)
-    blosc_df_wrt = mk_bcolz_writer(asdf=True)
-    blosc_uni_wrt = mk_bcolz_writer(asdf=False, convert_series=to_unicode)
-    blosc_lst_wrt = mk_bcolz_writer(asdf=False, convert_series=tolist)
+    pq_write_len = pq_writer(get_lens=True, compression='SNAPPY')
+    
+    bc_mkr_mkr = part(mk_bcolz_writer, null=null, str_enc=str_enc)
+    blosc_df_wrt = bc_mkr_mkr(method=BEnc.df)
+    blosc_uni_wrt = bc_mkr_mkr(method=BEnc.utf8)
+    blosc_lst_wrt = bc_mkr_mkr(method=BEnc.list)
+#     blosc_df_wrt = mk_bcolz_writer(method=BEnc.df, null=null, str_enc=str_enc)
+#     blosc_uni_wrt = mk_bcolz_writer(method=BEnc.utf8, null=null, str_enc=str_enc)
+#     blosc_lst_wrt = mk_bcolz_writer(method=BEnc.list, null=null, str_enc=str_enc)
     res = {
         'Csv': try_bench(dir('t.csv'), df, DataFrame.to_csv, csv_reader),
-#         'Bcolz-df': try_bench(dir('t_df.blsc'), df, blosc_df_wrt, read_bcolz),
-#         'Bcolz-uni': try_bench(dir('t_uni.blsc'), df, blosc_uni_wrt, read_bcolz),
-#         'Bcolz-lst': try_bench(dir('t_lst.blsc'), df, blosc_lst_wrt, read_bcolz),
-#         'Feather': try_bench(dir('t.fth'), df, feather.write_dataframe, feather.read_dataframe),
-#         'Pq-Snappy': try_bench(dir('t_snap.parq'), df, pq_writer(compression='SNAPPY'), pqr),
-#         'Pq-Snappy-enc': try_bench(dir('t_snap_utf8.parq'), df, pq_write_enc, pqr),
-#         'Pq-Snappy-ft': try_bench(dir('t_snap_f.parq'), df, pq_writer(get_lens=True, compression='SNAPPY'), pqr),
-#         'Pq-Uncompressed': try_bench(dir('t_unc.parq'), df, pq_writer(compression='UNCOMPRESSED'), pqr),
+        'Bcolz-df': try_bench(dir('t_df.blsc'), df, blosc_df_wrt, read_bcolz),
+        'Bcolz-uni': try_bench(dir('t_uni.blsc'), df, blosc_uni_wrt, read_bcolz),
+        'Bcolz-lst': try_bench(dir('t_lst.blsc'), df, blosc_lst_wrt, read_bcolz),
+        'Feather': try_bench(dir('t.fth'), df, feather.write_dataframe, feather.read_dataframe),
+        'Pq-Snappy': try_bench(dir('t_snap.parq'), df, pq_writer(compression='SNAPPY'), pqr),
+        'Pq-Snappy-enc': try_bench(dir('t_snap_utf8.parq'), df, pq_write_enc, pqr),
+        'Pq-Snappy-ft': try_bench(dir('t_snap_f.parq'), df, pq_write_len, pqr),
+        'Pq-Uncompressed': try_bench(dir('t_unc.parq'), df, pq_writer(compression='UNCOMPRESSED'), pqr),
     }
-        # try_bench('/tmp/test/t_gzip.parq', df, pq_writer(compression='GZIP'), pqr
-        # ) + ('Pq-Gzip',),  # <= slow writes
+    # try_bench('/tmp/test/t_gzip.parq', df, pq_writer(compression='GZIP'), pqr) + ('Pq-Gzip',),  # <= slow writes
     if asdf:
         return todf(res)
     else:
         return res
-
-def todf(x):
-    d = DataFrame(x).T
-    d.columns = ['Write_time', 'Read_time', 'Mb']
-    d.index.name = 'Fmt'
-    return d.reset_index(drop=0)
-
-# todf = lambda x: DataFrame(x, columns=['Write_time', 'Read_time', 'Mb', 'Fmt'])
 
 
 # In[ ]:
@@ -328,28 +498,27 @@ res = run_writers(df, asdf=True)
 
 # In[ ]:
 
-res
+d_txf[:3]
 
 
 # In[ ]:
 
-res
+def run_dfs(base_df):
+    """For base df with single col, generate new columns
+    based on original with different ways of encoding
+    the string type. Run the full battery of
+    read/write benchmarks on each of these new columns.
+    """
+    d = new_cols(base_df)
+    #global res, resnull, resc, rescnull, resb, resbnull
+    res = run_writers(d[['Str']], str_enc=StrEnc.str)
+    resnull = run_writers(d[['Str_nls']], str_enc=StrEnc.str, null=True)
 
+    resc = run_writers(d[['Cat']], cats=cols, str_enc=StrEnc.cat)
+    rescnull = run_writers(d[['Cat_nls']], cats=cols, str_enc=StrEnc.cat, null=True)
 
-# In[ ]:
-
-def run_dfs(dfholder):
-    d = dfholder
-    global res, resnull, resc, rescnull, resb, resbnull
-    res = run_writers(d.dfs, asdf=1, cats=None)
-    print('rnull!')
-    resnull = run_writers(d.dfsnulls, asdf=1, cats=None)
-
-    resc = run_writers(d.dfc, asdf=1, cats=cols)
-    rescnull = run_writers(d.dfcnulls, asdf=1, cats=cols)
-
-    resb = run_writers(d.dfb, asdf=1, cats=None)
-    resbnull = run_writers(d.dfbnulls, asdf=1, cats=None)
+    resb = run_writers(d[['Bytes']], str_enc=StrEnc.byte)
+    resbnull = run_writers(d[['Bytes_nls']], str_enc=StrEnc.byte, null=True)
     
     allres = stack_results([
         (res, 'Str', False),
@@ -362,11 +531,56 @@ def run_dfs(dfholder):
     return allres
 
 
+# In[ ]:
+
+r = run_dfs(df[['Low_card']][:101])
+
+
+# def run_dfs(dfholder):
+#     d = dfholder
+#     global res, resnull, resc, rescnull, resb, resbnull
+#     res = run_writers(d.dfs, asdf=1, cats=None)
+#     print('rnull!')
+#     resnull = run_writers(d.dfsnulls, asdf=1, cats=None)
+# 
+#     resc = run_writers(d.dfc, asdf=1, cats=cols)
+#     rescnull = run_writers(d.dfcnulls, asdf=1, cats=cols)
+# 
+#     resb = run_writers(d.dfb, asdf=1, cats=None)
+#     resbnull = run_writers(d.dfbnulls, asdf=1, cats=None)
+#     
+#     allres = stack_results([
+#         (res, 'Str', False),
+#         (resnull, 'Str', True),
+#         (resc, 'Cat', False),
+#         (rescnull, 'Cat', True),
+#         (resb, 'Byte', False),
+#         (resbnull, 'Byte', True),
+#     ])
+#     return allres
+
 # ## Actually run benchmarks
+
+# reslo_old = reslo
 
 # In[ ]:
 
+get_ipython().magic("time reslo = run_dfs(df[['Low_card']])")
 
+
+# In[ ]:
+
+mu.ping()
+
+
+# In[ ]:
+
+resunq = run_dfs(df[['Unq']])
+
+
+# In[ ]:
+
+mu.ping()
 
 
 # In[ ]:
@@ -375,22 +589,11 @@ get_ipython().system('rm -rf /tmp/test/')
 get_ipython().magic('mkdir /tmp/test/')
 
 
-# In[ ]:
-
-reslo = run_dfs(dflo)
-
-
-# In[ ]:
-
-resunq = run_dfs(dfunq)
-
+# reslo = run_dfs(dflo)
+# 
+# resunq = run_dfs(dfunq)
 
 # ## Plots
-
-# In[ ]:
-
-
-
 
 # In[ ]:
 
@@ -404,9 +607,47 @@ comp_rat.plot.scatter(x='Read_time', y='Compression_ratio')
 
 # In[ ]:
 
+reslo
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+slow = reslo.sort_values('Read_time', ascending=0)[:11].reset_index(drop=1)
+
+
+# In[ ]:
+
+
+
+
+# In[ ]:
+
+Bcolz-lst   78.783165  194.710648  15.797601   Cat   True
+Bcolz-lst   47.681886    6.519006  15.800197   Cat  False
+Bcolz-lst   56.181895   58.864246  15.796801   Str   True
+Bcolz-lst   79.398800   15.782561  15.796803  Byte   True
+
+
+# In[ ]:
+
+slow.sort_values('Fmt', ascending=True)
+
+
+# In[ ]:
+
 _allres = reslo.dropna(axis=0)
 g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
 g.map(plot_scatter, 'Write_time', 'Read_time', 'Mb', 'Fmt')
+
+
+# In[ ]:
+
+
 
 
 # In[ ]:

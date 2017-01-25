@@ -45,6 +45,7 @@ def mod_cols(df, f=None, cols=None):
 
 
 def add_nulls(s, size=100):
+    s = s.copy()
     rand_ixs = nr.choice(s.index, size=size, replace=False)
     s.loc[rand_ixs] = None
     return s
