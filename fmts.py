@@ -27,10 +27,22 @@
 import imports; imports.reload(imports); from imports import *
 import utils; reload(utils); from utils import (
     Timer, get_dtypes, mod_cols, add_nulls, get_obj_type,
-    plot_scatter, part, getsize
+    plot_scatter, part, getsize, INFEASIBLE, nan,
+    check_args
 )
 get_ipython().magic('matplotlib inline')
 # ;;
+
+
+# In[ ]:
+
+def null_type(s):
+    n = (~(s == s)).sum() > 0
+    t1 = s.dtype
+    if t1 == object:
+        tp = type(s.iloc[0])
+        return n, tp
+    return n, t1
 
 
 # # Load and set up df
@@ -56,37 +68,6 @@ df = DataFrame(dict(Unq=rstrs, Low_card=nr.choice(rstrs[:100], size=N)))[cols]
 df.apply(lambda x: x.nunique())
 
 
-# In[ ]:
-
-# from castra import Castra
-# c = Castra(path='/tmp/test/df.castra', template=df)
-# c.extend(df)
-
-# c
-
-
-# !rm -rf /tmp/test/df.castra
-
-# def castro_writer():
-#     def write_castro(df, fn):
-#         c = Castra(path=fn, template=df)
-#         c.extend(df)
-#     return write_castro
-# 
-# 
-# def castro_reader(categories=None):
-#     def read_castro(fn):
-#         c = Castra(fn)
-#         return c[:]
-#     return read_castro
-# 
-# writer = castro_writer()
-# reader = castro_reader()
-# 
-# writer(df, )
-# 
-# c = Castra('/tmp/test/df.castra')
-
 # ## Bcolz
 
 # In[ ]:
@@ -96,17 +77,6 @@ import bcolz
 
 # from pandas.util.testing import assert_frame_equal
 
-
-# fn = '/tmp/test/df.bc'
-# 
-# !rm -r $fn
-# %time ct = write_bcolz(df, fn=fn, asdf=True)
-# 
-# !rm -r $fn
-# %time ctl = write_bcolz(df, fn=fn, asdf=False, convert_series=tolist)
-# 
-# !rm -r $fn
-# %time ctl = write_bcolz(df, fn=fn, asdf=False, convert_series=to_unicode)
 
 # %time bu = bcolz.carray(a)
 # %time bu2 = bcolz.carray(df['Unq'].tolist())
@@ -131,7 +101,6 @@ import bcolz
 #     ))
 #     return all_dfs
 #     
-# tocat = lambda x: x.astype('category')
 # nr.seed(0)
 # dflo = gen_diff_types(df[['Low_card']])
 # dfunq = gen_diff_types(df[['Unq']])
@@ -152,10 +121,7 @@ def new_cols(df):
     )
     return df.rename(columns={c: 'Str'})
 
-
-# In[ ]:
-
-new_cols(df[['Unq']])[:3]
+tocat = lambda x: x.astype('category')
 
 
 # In[ ]:
@@ -225,8 +191,12 @@ def pq_reader(categories=None):
 
 def bench(fn, df, writer, reader, desc=''):
     twrite = Timer(start=1)
-    writer(df, fn)
+    res = writer(df, fn)
+    if res is INFEASIBLE:
+        # print('INFEASIBLE')
+        return nan, nan, nan
     twrite.end()
+    # print('Written with', writer)
     
     tread = Timer(start=1)
     rdf = reader(fn)
@@ -257,17 +227,14 @@ def try_bench(*a, **kw):
 
 # In[ ]:
 
-def ff(a=1):
-    ff.a = 1
-    return 2
-
-ff2 = part(ff, a=2)
-ff2()
-
-
-# In[ ]:
-
-ff2.func.a
+# import datetime as dt
+import imports; imports.reload(imports); from imports import *
+import utils; reload(utils); from utils import (
+    Timer, get_dtypes, mod_cols, add_nulls, get_obj_type,
+    plot_scatter, part, getsize
+)
+get_ipython().magic('matplotlib inline')
+# ;;
 
 
 # In[ ]:
@@ -289,12 +256,10 @@ class StrEnc(enum.Enum):
 
 # In[ ]:
 
-def feasible_bcolz(method=None, str_enc=None, null=None):
-    "Some bcolz settings are unbearably slow. "
-    assert isinstance(method, BEnc), 'method must be BEnc'
-    assert isinstance(str_enc, StrEnc), 'str_enc must be StrEnc'
-    assert null in {True, False}, 'null must be bool'
-    
+@check_args
+def feasible_bcolz(method: BEnc=None, str_enc: StrEnc=None,
+                   null: bool=None, **_):
+    "Some bcolz settings are unbearably slow."   
     if method == BEnc.df:
         return (str_enc, null) == (StrEnc.str, False)
     elif method == BEnc.list:
@@ -349,34 +314,15 @@ def stack_results(res):
 
 # In[ ]:
 
-def null_type(s):
-    n = (~(s == s)).sum() > 0
-    t1 = s.dtype
-    if t1 == object:
-        tp = type(s.iloc[0])
-        return n, tp
-    return n, t1
-
-
-# In[ ]:
-
-TODO: this check before calling `write_bcolz`
-if not feasible_bcolz( method=method, null=null, str_enc=str_enc):
-        na
-        return 
-
-
-nan = np.float('nan')
-
-
-# In[ ]:
-
 tolist = lambda x: x.tolist()
 to_unicode = lambda x: x.values.astype('U')
 
     
-@check_args(method=BEnc, str_enc=StrEnc, null=bool)
-def write_bcolz(df, fn=None, method=BEnc.df, null=null, str_enc=str_enc):    
+@check_args
+def write_bcolz(df, fn=None, method: BEnc=None, str_enc: StrEnc=None,
+                   null: bool=None):
+    if not feasible_bcolz(method=method, str_enc=str_enc, null=null):
+        return INFEASIBLE
     if method == BEnc.df:
         ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
     else:
@@ -390,6 +336,7 @@ def read_bcolz(fn):
     ct = bcolz.open(fn, mode='r')
     return DataFrame(ct[:])
 
+
 mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
 # mk_bcolz_reader = lambda **_: read_bcolz
 # read_bcolz(fn)[:2]
@@ -402,49 +349,21 @@ d_txf[:2]
 
 # In[ ]:
 
-from functools import wraps
+import sys
 
-def check_args(**kw_types):
-    def deco(f):
-        @wraps(f)
-        def wrapper(*a, **kwds):
-            for argname, type_ in kw_types.items():
-                if argname not in kwds:
-                    print('Warning, `{}` not explicitly passed'.format(argname))
-                    continue
-                assert isinstance(kwds[argname], type_), '{} must be {}'.format(argname, type_)
-            return f(*a, **kwds)
-        return wrapper
-    return deco
-
-@check_args(str_enc=StrEnc, null=bool)
-def ff(df, str_enc=None, null=None):
-    return 1
-    
-ff(1, str_enc=StrEnc.byte)
+def fprint(*a, **k):
+    print(*a, **k)
+    sys.stdout.flush()
 
 
 # In[ ]:
 
-def f(a=1, b=2, c=3):
-    return a, b, c
-
-f1 = part(f, b=9)
-f2 = part(f1, c=4)
-f2()
-
-
-# In[ ]:
-
-@check_args(str_enc=StrEnc, null=bool)
-def run_writers(df, asdf=True, cats=None, dirname='/tmp/test', str_enc=None, null=False):
+@check_args
+def run_writers(df, asdf=True, cats=None, dirname='/tmp/test',
+                str_enc: StrEnc=None, null: bool=False):
     """For given df (should be single column), run series of
     reads/writes
     """
-    assert isinstance(method, BEnc), 'method must be BEnc'
-    assert isinstance(str_enc, StrEnc), 'str_enc must be StrEnc'
-    assert null in {True, False}, 'null must be bool'
-
     null_, _ = null_type(df.iloc[:, 0])
     assert null_ == null
     obj_tp = get_obj_type(df) if cats is None else 'infer'
@@ -454,11 +373,13 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test', str_enc=None, nul
         dict(zip(cats, it.repeat('category')))
     )
     
-    if path.exists(dirname):
-        print('Deleting', dirname)
+    if os.path.exists(dirname):
+        print('Deleting', dirname, '... ', end='')
         shutil.rmtree(dirname)
+        fprint('Done')
+        
     os.mkdir(dirname)
-    dir = lambda x: path.join(dirname, x)
+    dir = lambda x: os.path.join(dirname, x)
     
 #     method=BEnc.df, null=null, str_enc=str_enc
     
@@ -489,11 +410,6 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test', str_enc=None, nul
         return todf(res)
     else:
         return res
-
-
-# In[ ]:
-
-res = run_writers(df, asdf=True)
 
 
 # In[ ]:
@@ -533,7 +449,7 @@ def run_dfs(base_df):
 
 # In[ ]:
 
-r = run_dfs(df[['Low_card']][:101])
+r = run_dfs(df[['Low_card']][:2000])
 
 
 # def run_dfs(dfholder):
@@ -575,7 +491,7 @@ mu.ping()
 
 # In[ ]:
 
-resunq = run_dfs(df[['Unq']])
+get_ipython().magic("time resunq = run_dfs(df[['Unq']])")
 
 
 # In[ ]:
@@ -607,22 +523,7 @@ comp_rat.plot.scatter(x='Read_time', y='Compression_ratio')
 
 # In[ ]:
 
-reslo
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
 slow = reslo.sort_values('Read_time', ascending=0)[:11].reset_index(drop=1)
-
-
-# In[ ]:
-
-
 
 
 # In[ ]:
@@ -647,7 +548,9 @@ g.map(plot_scatter, 'Write_time', 'Read_time', 'Mb', 'Fmt')
 
 # In[ ]:
 
-
+_allres = resunq.dropna(axis=0)
+g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
+g.map(plot_scatter, 'Write_time', 'Read_time', 'Mb', 'Fmt')
 
 
 # In[ ]:

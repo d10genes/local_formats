@@ -1,13 +1,16 @@
 from collections import OrderedDict
-from functools import partial
+from functools import partial, wraps
 from os import path
 import os
 from pandas import DataFrame
 import matplotlib.pyplot as plt
 import numpy.random as nr
+import numpy as np
 import time
 
 NUDGE = .005
+INFEASIBLE = object()
+nan = np.float('nan')
 
 
 class Timer(object):
@@ -67,6 +70,29 @@ def get_obj_type(df, as_str=True):
 enc_dct = {str: 'utf8', bytes: 'bytes'}
 
 
+# Boilerplate
+def check_args(f):
+    """Decorator that checks that kw args are
+    instance of correct type
+
+    @check_args
+    def plus5(a: int):
+        return a + 5
+
+    plus5(a=1) # => ok
+    plus5(a=1.) # => AssertionError
+    """
+    @wraps(f)
+    def wrapper(*a, **kwds):
+        for argname, type_ in f.__annotations__.items():
+            if argname not in kwds:
+                print('Warning, `{}` not explicitly passed'.format(argname))
+                continue
+            assert isinstance(kwds[argname], type_), '{} must be {}'.format(argname, type_)
+        return f(*a, **kwds)
+    return wrapper
+
+
 # Plotting stuff
 def s2df(ss):
     return DataFrame(OrderedDict([(s.name, s) for s in ss]))
@@ -111,6 +137,11 @@ def plot_scatter(x, y, size, lab=None, ax=None, sz_fact=30, color=None):
 def part(f, *a, **kw):
     wrapper = partial(f, *a, **kw)
     wrapper.__module__ = '__main__'
+    new_dct = wrapper.__dict__
+    old_dct = f.__dict__
+    for k, v in old_dct.items():
+        if k not in new_dct:
+            setattr(wrapper, k, v)
     return wrapper
 
 
