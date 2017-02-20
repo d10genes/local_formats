@@ -9,6 +9,7 @@ import uuid
 
 import numpy.random as nr
 import numpy as np
+import bcolz
 import fastparquet
 import feather
 import matplotlib.pyplot as plt

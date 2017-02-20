@@ -1,8 +1,9 @@
 from collections import OrderedDict
+import enum
 from functools import partial, wraps
 from os import path
 import os
-from pandas import DataFrame
+from pandas import DataFrame, pandas as pd
 import matplotlib.pyplot as plt
 import numpy.random as nr
 import numpy as np
@@ -80,7 +81,7 @@ def check_args(f):
         return a + 5
 
     plus5(a=1) # => ok
-    plus5(a=1.) # => AssertionError
+    plus5(a=1.) # => TypeError
     """
     @wraps(f)
     def wrapper(*a, **kwds):
@@ -88,7 +89,8 @@ def check_args(f):
             if argname not in kwds:
                 print('Warning, `{}` not explicitly passed'.format(argname))
                 continue
-            assert isinstance(kwds[argname], type_), '{} must be {}'.format(argname, type_)
+            if not isinstance(kwds[argname], type_):
+                raise TypeError('{} must be {}'.format(argname, type_))
         return f(*a, **kwds)
     return wrapper
 
@@ -151,3 +153,45 @@ def getsize(fn):
     return sum(path.getsize(path.join(dirpath, fn_))
                for dirpath, _, fns in os.walk(fn)
                for fn_ in fns)
+
+
+def apply_rank_agg(df, scoring_func=None):
+    allres = df.dropna(axis=0).copy()
+    rnk = (
+        scoring_func(allres).groupby('Fmt').Ratio
+        .agg(['median', 'size'])
+        .assign(Fails=lambda x: x['size'].max() - x['size'])
+        .rename(columns=str.capitalize).drop('Size', axis=1)
+        .sort_values(['Median', 'Fails'], ascending=True)
+    )
+    return rnk
+
+
+def combine_rankings(dflow, dfunq, scoring_func=None):
+    d1 = apply_rank_agg(dflow, scoring_func=scoring_func)
+    d2 = apply_rank_agg(dfunq, scoring_func=scoring_func)
+    d3 = pd.concat([d1, d2], axis=1)
+    d3.columns = pd.MultiIndex.from_product([('Low_card', 'Unique'), list(d1)])
+    sort_cols = [
+        ('Unique', 'Median'),
+        ('Low_card', 'Median'),
+        ('Unique', 'Fails'),
+    ]
+    return d3.drop(('Low_card', 'Fails'), axis=1).sort_values(sort_cols, ascending=[1, 1, 1])
+
+
+#########
+# Bcolz #
+#########
+class BEnc(enum.Enum):
+    "Bcolz encoding"
+    df = 1
+    list = 3
+    utf8 = 2
+
+
+class StrEnc(enum.Enum):
+    "Series encoding for string col"
+    cat = 1
+    str = 2
+    byte = 3

@@ -1,7 +1,7 @@
 
 # coding: utf-8
 
-# After years of CSV file format domination in the python world, I'm finally seeing more compelling options for local column-oriented data storage. Some give advantages in read speed, file size or both. 
+# After years of CSV file format domination in the python world, I'm finally seeing more compelling options in the form of local column-oriented data storage. Some give advantages in read speed, file size or both. 
 # 
 # While I've had good results in these formats for floats and ints, a bottleneck I still have is storing columns with strings. The file format landscape is improving fast, so I won't be surprised if the speed results of the benchmarks here are obsolete before they're published, but this can at least serve as a performance snapshot.
 # 
@@ -17,9 +17,9 @@
 # 
 # In this post I compare the performance of these different file formats on string data encoded as strings, categoricals, and bytes. While I sometimes treat categorical encoding as a silver bullet for performance, since it is represented internally as integers, the benefits only outweigh the overhead when there are just a few unique strings in a column that are repeated many times. To compare the performance of the different formats in both scenarios, I test them on a series with mostly unique strings, and another with just a few repeated strings. 
 # 
-# The benchmarks below compare pandas' CSV, feather and fastparquet. I couldn't find any setting where Bcolz had reasonable speed on the string data, so threw that out. While the ultimate file size is important, it is secondary to speed for me, so I also ignored compression options like gzip and brotli.
+# The benchmarks below compare pandas' CSV, feather, fastparquet and bcolz. While the ultimate file size is important, it is secondary to speed for me, so I also ignored compression options like gzip and brotli.
 # 
-# I'm only using series with about 200k rows because I don't have all day to wait on the benchmarks to finish.
+# I'm only using series with about 200k rows because I don't have all day to wait on the benchmarks to finish. Also note that with the combinatorial explosion of possible options, these benchmarks only represent a comparison of the narrow range of options that I would consider.
 
 # In[ ]:
 
@@ -28,15 +28,22 @@ import imports; imports.reload(imports); from imports import *
 import utils; reload(utils); from utils import (
     Timer, get_dtypes, mod_cols, add_nulls, get_obj_type,
     plot_scatter, part, getsize, INFEASIBLE, nan,
-    check_args
+    check_args, BEnc, StrEnc, combine_rankings
 )
+
+import sys
+
+def fprint(*a, **k):
+    print(*a, **k)
+    sys.stdout.flush()
+    
 get_ipython().magic('matplotlib inline')
 # ;;
 
 
 # In[ ]:
 
-def null_type(s):
+def null_type(s: pd.Series) -> (bool, type):
     n = (~(s == s)).sum() > 0
     t1 = s.dtype
     if t1 == object:
@@ -68,50 +75,15 @@ df = DataFrame(dict(Unq=rstrs, Low_card=nr.choice(rstrs[:100], size=N)))[cols]
 df.apply(lambda x: x.nunique())
 
 
-# ## Bcolz
-
-# In[ ]:
-
-import bcolz
-# from numba import njit
-
-# from pandas.util.testing import assert_frame_equal
-
-
-# %time bu = bcolz.carray(a)
-# %time bu2 = bcolz.carray(df['Unq'].tolist())
-# %time b2 = bcolz.ctable.fromdataframe(df[['Unq']])
-
 # ### Bytes | categorical | strings & Nulls | Nonulls
-# This function returns a container with combinations of the different string data encodings, and some with nulls randomly inserted, since this can have a big effect on parquet's performance.
-
-# def gen_diff_types(df):
-#     "df with str dtype"
-#     all_dfs = lambda: None
-#     dct = all_dfs.__dict__
-#     dct.update(dict(
-#         dfs=df, 
-#         dfsnulls=(df, f=add_nulls),
-#         dfb=mod_cols(df, f=lambda x: x.str.encode('utf-8')),
-#         dfc=mod_cols(df, f=tocat),
-#     ))
-#     dct.update(dict(
-#         dfbnulls=mod_cols(all_dfs.dfb, f=add_nulls),
-#         dfcnulls=mod_cols(all_dfs.dfsnulls, f=tocat),
-#     ))
-#     return all_dfs
-#     
-# nr.seed(0)
-# dflo = gen_diff_types(df[['Low_card']])
-# dfunq = gen_diff_types(df[['Unq']])
+# This function takes a named Series with string data, and returns a DataFrame whose columns are combinations of the different string data encodings, and some with nulls randomly inserted, since this can have a big effect on parquet's performance.
 
 # In[ ]:
 
-def new_cols(df):
+def new_cols(s):
+    df = s.to_frame()
     c = df.columns[0]
-    s = df[c]
     df = df.assign(
-        # Str=s, 
         Str_nls=lambda x: add_nulls(x[c]),
         Bytes=lambda x: x[c].str.encode('utf-8'),
         Cat=lambda x: tocat(x[c])
@@ -126,40 +98,14 @@ tocat = lambda x: x.astype('category')
 
 # In[ ]:
 
-d_txf = new_cols(df[['Unq']])
+df_types = new_cols(df.Unq)
+DataFrame({'Nulls': df_types.isnull().sum(), 'Dtypes': df_types.dtypes})
 
 
-# In[ ]:
-
-DataFrame({'Nulls': d_txf.isnull().sum(), 'Dtypes': d_txf.dtypes})
-
-
-# (d_txf.Cat_nls == d_txf.Cat_nls).mean()
-
-# Here's a description:
-
-# def summarize_types(df):
-#     return DataFrame(OrderedDict([('Dtypes', df.dtypes), ('Nulls', df.isnull().sum())]))
-# 
-# 
-# ix = pd.MultiIndex.from_product([
-#     ['Str', 'Str_null',
-#      'Cat', 'Cat_null',
-#      'Bytes', 'Bytes_null'],
-#     ['Dtypes', 'Nulls']])
-# 
-# d = DataFrame(pd.concat(map(
-#     summarize_types,
-#     [dflo.dfs, dflo.dfsnulls,
-#      dflo.dfc, dflo.dfcnulls,
-#      dflo.dfb, dflo.dfbnulls,
-#     ]
-#     ), axis=1))
-# d.columns = ix
-# d
+# Here's a summary:
 
 # ## Parquet writer/reader
-# Here are some helper functions to read and write with fastparquet using different options
+# Here are some helper functions to read and write with fastparquet using different options. Specifying the maximum length of a string in the column with `fixed_text` gives a big speed boost, but comes with the cost of finding this length before saving.
 
 # In[ ]:
 
@@ -182,6 +128,77 @@ def pq_reader(categories=None):
         f = fastparquet.ParquetFile(fn)
         return f.to_pandas(categories=categories)
     return read_pq
+
+
+# ## Bcolz
+# I was originally going to write off bcolz because of some stunningly bad default performance on the data I initially tried. Simply creating a `carray` from a column takes about 20x as long as feather's writing to disk, for example:
+
+# In[ ]:
+
+get_ipython().magic('time _ = bcolz.carray(df.Unq)')
+
+
+# In[ ]:
+
+get_ipython().magic("time feather.write_dataframe(df, '/tmp/derp.ftr')")
+
+
+# But after playing around with every idea I could think of, I eventually found out that saving the underlying array after converting its type yields more reasonable results:
+
+# In[ ]:
+
+get_ipython().magic("time _ = bcolz.carray(df.Unq.values.astype('U'), mode='r')")
+
+
+# As does saving a list rather than a Series:
+
+# In[ ]:
+
+get_ipython().magic("time _ = bcolz.carray(df.Unq.tolist(), mode='r')")
+
+
+# But because some of the settings are orders of magnitude slower, though, I had to write a somewhat convoluted `feasible_bcolz` function designate which combinations of settings to avoid.
+
+# In[ ]:
+
+tolist = lambda x: x.tolist()
+to_unicode = lambda x: x.values.astype('U')
+mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
+
+    
+@check_args
+def write_bcolz(df, fn=None, method: BEnc=None, str_enc: StrEnc=None,
+                   null: bool=None):
+    if not feasible_bcolz(method=method, str_enc=str_enc, null=null):
+        return INFEASIBLE
+    if method == BEnc.df:
+        ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
+    else:
+        converter = {BEnc.list: tolist , BEnc.utf8: to_unicode}[method]
+        cs = [converter(col) if (col.dtype == 'O')
+              else col for _, col in df.iteritems()]
+        ct = bcolz.ctable(columns=cs, names=list(df), rootdir=fn)
+    return ct
+
+
+def read_bcolz(fn):
+    ct = bcolz.open(fn, mode='r')
+    return DataFrame(ct[:])
+
+
+@check_args
+def feasible_bcolz(method: BEnc=None, str_enc: StrEnc=None,
+                   null: bool=None, **_):
+    "Some bcolz settings are unbearably slow."   
+    if method == BEnc.df:
+        return (str_enc, null) == (StrEnc.str, False)
+    elif method == BEnc.list:
+        return (str_enc in {StrEnc.str, StrEnc.byte}) and (not null)
+    elif method == BEnc.utf8:
+        return str_enc != StrEnc.cat
+    raise TypeError("Shouldn't reach here")
+
+# feasible_bcolz(method=BEnc.df, str_enc=StrEnc.str, null=False)
 
 
 # ### Benchmarkers
@@ -227,77 +244,6 @@ def try_bench(*a, **kw):
 
 # In[ ]:
 
-# import datetime as dt
-import imports; imports.reload(imports); from imports import *
-import utils; reload(utils); from utils import (
-    Timer, get_dtypes, mod_cols, add_nulls, get_obj_type,
-    plot_scatter, part, getsize
-)
-get_ipython().magic('matplotlib inline')
-# ;;
-
-
-# In[ ]:
-
-import enum
-
-class BEnc(enum.Enum):
-    "Bcolz encoding"
-    df = 1
-    list = 3
-    utf8 = 2
-    
-class StrEnc(enum.Enum):
-    "Series encoding for string col"
-    str = 2
-    cat = 1
-    byte = 3
-
-
-# In[ ]:
-
-@check_args
-def feasible_bcolz(method: BEnc=None, str_enc: StrEnc=None,
-                   null: bool=None, **_):
-    "Some bcolz settings are unbearably slow."   
-    if method == BEnc.df:
-        return (str_enc, null) == (StrEnc.str, False)
-    elif method == BEnc.list:
-        return (str_enc in {StrEnc.str, StrEnc.byte}) and (not null)
-    elif method == BEnc.utf8:
-        return str_enc != StrEnc.cat
-    raise TypeError("Shouldn't reach here")
-    
-    
-feasible_bcolz(method=BEnc.df, str_enc=StrEnc.str, null=False)
-
-
-# combos = [
-#     (benc, strenc, null)
-#     for benc in BEnc.__members__.values()
-#     for strenc in StrEnc.__members__.values()
-#     for null in [True, False]
-# 
-# ]
-# 
-# bads = slow.sort_values(['Fmt', 'Enc', 'Null',], ascending=True).copy()
-# bads.Fmt = bads.Fmt.map({'Bcolz-df': BEnc.df, 'Bcolz-lst': BEnc.list, 'Bcolz-uni': BEnc.utf8})
-# bads.Enc = bads.Enc.map({'Str': StrEnc.str, 'Cat': StrEnc.cat, 'Byte': StrEnc.byte,})
-# 
-# bad_combos = list(bads['Fmt Enc Null'.split()].itertuples(index=False, name=None))
-# 
-# for combo in combos:
-#     method, str_enc, null = combo
-#     inbad = combo in bad_combos
-#     feas = feasible_bcolz(method=method, str_enc=str_enc, null=null)
-#     assert inbad != feas
-# #     print(inbad, feas)
-# #     if inbad == feas:
-# #         print(combo)
-#     
-
-# In[ ]:
-
 def todf(x):
     d = DataFrame(x).T
     d.columns = ['Write_time', 'Read_time', 'Mb']
@@ -310,50 +256,6 @@ def stack_results(res):
            .assign(Null=null))
         for df, type, null in res
     ], ignore_index=True)
-
-
-# In[ ]:
-
-tolist = lambda x: x.tolist()
-to_unicode = lambda x: x.values.astype('U')
-
-    
-@check_args
-def write_bcolz(df, fn=None, method: BEnc=None, str_enc: StrEnc=None,
-                   null: bool=None):
-    if not feasible_bcolz(method=method, str_enc=str_enc, null=null):
-        return INFEASIBLE
-    if method == BEnc.df:
-        ct = bcolz.ctable.fromdataframe(df, rootdir=fn)
-    else:
-        converter = {BEnc.list: tolist , BEnc.utf8: to_unicode}[method]
-        cs = [converter(col) if (col.dtype == 'O')
-              else col for _, col in df.iteritems()]
-        ct = bcolz.ctable(columns=cs, names=list(df), rootdir=fn)
-    return ct
-
-def read_bcolz(fn):
-    ct = bcolz.open(fn, mode='r')
-    return DataFrame(ct[:])
-
-
-mk_bcolz_writer = lambda **kw: part(write_bcolz, **kw)
-# mk_bcolz_reader = lambda **_: read_bcolz
-# read_bcolz(fn)[:2]
-
-
-# In[ ]:
-
-d_txf[:2]
-
-
-# In[ ]:
-
-import sys
-
-def fprint(*a, **k):
-    print(*a, **k)
-    sys.stdout.flush()
 
 
 # In[ ]:
@@ -380,9 +282,7 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test',
         
     os.mkdir(dirname)
     dir = lambda x: os.path.join(dirname, x)
-    
-#     method=BEnc.df, null=null, str_enc=str_enc
-    
+        
     csv_reader = partial(pd.read_csv, dtype=csv_dtype, index_col=0)
     pq_write_enc = pq_writer(compression='SNAPPY', object_encoding=obj_tp)
     pq_write_len = pq_writer(get_lens=True, compression='SNAPPY')
@@ -391,9 +291,7 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test',
     blosc_df_wrt = bc_mkr_mkr(method=BEnc.df)
     blosc_uni_wrt = bc_mkr_mkr(method=BEnc.utf8)
     blosc_lst_wrt = bc_mkr_mkr(method=BEnc.list)
-#     blosc_df_wrt = mk_bcolz_writer(method=BEnc.df, null=null, str_enc=str_enc)
-#     blosc_uni_wrt = mk_bcolz_writer(method=BEnc.utf8, null=null, str_enc=str_enc)
-#     blosc_lst_wrt = mk_bcolz_writer(method=BEnc.list, null=null, str_enc=str_enc)
+
     res = {
         'Csv': try_bench(dir('t.csv'), df, DataFrame.to_csv, csv_reader),
         'Bcolz-df': try_bench(dir('t_df.blsc'), df, blosc_df_wrt, read_bcolz),
@@ -414,18 +312,13 @@ def run_writers(df, asdf=True, cats=None, dirname='/tmp/test',
 
 # In[ ]:
 
-d_txf[:3]
-
-
-# In[ ]:
-
-def run_dfs(base_df):
+def run_dfs(base_srs):
     """For base df with single col, generate new columns
     based on original with different ways of encoding
     the string type. Run the full battery of
     read/write benchmarks on each of these new columns.
     """
-    d = new_cols(base_df)
+    d = new_cols(base_srs)
     #global res, resnull, resc, rescnull, resb, resbnull
     res = run_writers(d[['Str']], str_enc=StrEnc.str)
     resnull = run_writers(d[['Str_nls']], str_enc=StrEnc.str, null=True)
@@ -444,118 +337,28 @@ def run_dfs(base_df):
         (resb, 'Byte', False),
         (resbnull, 'Byte', True),
     ])
-    return allres
+    return allres.assign(Ran=lambda x: ~x.Mb.isnull())
 
-
-# In[ ]:
-
-r = run_dfs(df[['Low_card']][:2000])
-
-
-# def run_dfs(dfholder):
-#     d = dfholder
-#     global res, resnull, resc, rescnull, resb, resbnull
-#     res = run_writers(d.dfs, asdf=1, cats=None)
-#     print('rnull!')
-#     resnull = run_writers(d.dfsnulls, asdf=1, cats=None)
-# 
-#     resc = run_writers(d.dfc, asdf=1, cats=cols)
-#     rescnull = run_writers(d.dfcnulls, asdf=1, cats=cols)
-# 
-#     resb = run_writers(d.dfb, asdf=1, cats=None)
-#     resbnull = run_writers(d.dfbnulls, asdf=1, cats=None)
-#     
-#     allres = stack_results([
-#         (res, 'Str', False),
-#         (resnull, 'Str', True),
-#         (resc, 'Cat', False),
-#         (rescnull, 'Cat', True),
-#         (resb, 'Byte', False),
-#         (resbnull, 'Byte', True),
-#     ])
-#     return allres
 
 # ## Actually run benchmarks
 
-# reslo_old = reslo
-
 # In[ ]:
 
-get_ipython().magic("time reslo = run_dfs(df[['Low_card']])")
-
-
-# In[ ]:
-
-mu.ping()
+get_ipython().magic('time reslo = run_dfs(df.Low_card)')
 
 
 # In[ ]:
 
-get_ipython().magic("time resunq = run_dfs(df[['Unq']])")
+get_ipython().magic('time resunq = run_dfs(df.Unq)')
 
-
-# In[ ]:
-
-mu.ping()
-
-
-# In[ ]:
-
-get_ipython().system('rm -rf /tmp/test/')
-get_ipython().magic('mkdir /tmp/test/')
-
-
-# reslo = run_dfs(dflo)
-# 
-# resunq = run_dfs(dfunq)
 
 # ## Plots
 
 # In[ ]:
 
-allres.ix[np.setdiff1d(allres.index, _allres.index)].sort_values(['Fmt'], ascending=True)
-
-
-# In[ ]:
-
-comp_rat.plot.scatter(x='Read_time', y='Compression_ratio')
-
-
-# In[ ]:
-
-slow = reslo.sort_values('Read_time', ascending=0)[:11].reset_index(drop=1)
-
-
-# In[ ]:
-
-Bcolz-lst   78.783165  194.710648  15.797601   Cat   True
-Bcolz-lst   47.681886    6.519006  15.800197   Cat  False
-Bcolz-lst   56.181895   58.864246  15.796801   Str   True
-Bcolz-lst   79.398800   15.782561  15.796803  Byte   True
-
-
-# In[ ]:
-
-slow.sort_values('Fmt', ascending=True)
-
-
-# In[ ]:
-
-_allres = reslo.dropna(axis=0)
-g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
+_allreslo = reslo.dropna(axis=0)
+g = sns.FacetGrid(_allreslo, row='Enc', col='Null', aspect=1.2, size=4)
 g.map(plot_scatter, 'Write_time', 'Read_time', 'Mb', 'Fmt')
-
-
-# In[ ]:
-
-_allres = resunq.dropna(axis=0)
-g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
-g.map(plot_scatter, 'Write_time', 'Read_time', 'Mb', 'Fmt')
-
-
-# In[ ]:
-
-reslo.query('Null').sort_values(['Enc', 'Read_time'], ascending=True)
 
 
 # In[ ]:
@@ -565,70 +368,40 @@ g = sns.FacetGrid(_allres, row='Enc', col='Null', aspect=1.2, size=4)
 g.map(part(plot_scatter, sz_fact=10), 'Write_time', 'Read_time', 'Mb', 'Fmt')
 
 
-# - CSV suffers dramatically in speed on categorical encodings
-# - Low cardinality strings
-#     - Everything besides CSV has similar speed characteristics for categoricals
-#     
-# - Feather is really hard to beat in speed, except for unique byte strings with nulls (and [crashes for bytes with no nulls in the column](https://github.com/wesm/feather/issues/283))
+# ## Ranking and conclusion
+
+# The following scores the formats based on the time to write and read (but gives twice the weight to read since that's more important to me). For each string encoding setting, it finds the ratio of each format to the one with the best time.
 # 
+# As an example, consider we're looking for the total weighted time with Non-null byte encoding for just Feather and CSV. If the weighted time for Feather is 2 seconds and for CSV is 4 seconds, then Feather gets a score of 2/2=1 and CSV gets a score of 4/2=2. I then get the median score, aggregating for each of the encoding scenarios.
+
+# In[ ]:
+
+score = lambda df: 1 * df.Write_time + 2 * df.Read_time
+
+
+def ratio(df):
+    s = score(df)
+    return s.div(s.min())
+
+
+def apply_ranking(df):
+    ranks = pd.concat([ratio(gdf) for k, gdf in
+                       df.groupby(['Enc', 'Null'], sort=False)]
+                     ).astype(int)
+    df['Ratio'] = ranks
+    return df
+
+
+combine_rankings(reslo, resunq, scoring_func=apply_ranking)
+
+
+# With these criteria, Feather appears to have consistently good speed across settings, and only fails when writing a bytes column **without** null values ([#283](https://github.com/wesm/feather/issues/283)). The bcolz Dataframe mode does well on the one case where it doesn't take forever to run, and Parquet with snappy encoding and the length setting seems to do well when there are few unique values. It seems that the others which are robust to all the settings have significantly worse performance, though.
 # 
-# My personal takeaways:
-# - For columns with lots of redundant strings, convert to categorical if possible and use fastparquet with Snappy
-# - Otherwise, try to use bytes instead of strings and use `fastparquet.write`'s `fixed_text` argument
+# The format that will come closest to Feather for me would probably be Bcolz with the unicode setting (applying `.values.astype('U')` to a frame before saving). It suffers a bit with lots of unique values, but works under *all* of the string and bytes conditions, unlike Feather:
 
 # In[ ]:
 
-comp_rat = reslo.assign(Compression_ratio=lambda x: x.Mb.max() / x.Mb).query('Fmt != "Pq-Gzip"')
-sns.stripplot(x="Fmt", y="Compression_ratio", data=comp_rat, jitter=True)
-plt.xticks(rotation=75);
+combine_rankings(reslo.query('Enc != "Cat"'), resunq.query('Enc != "Cat"'), scoring_func=apply_ranking)
 
 
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-pq_writer(compression='SNAPPY')(dfs, '/tmp/x.parq')
-
-
-# In[ ]:
-
-f = fastparquet.ParquetFile('/tmp/x.parq')
-
-
-# In[ ]:
-
-f.to_pandas(categories=categories)
-
-
-# In[ ]:
-
-f
-
-
-# In[ ]:
-
-
-
-
-# In[ ]:
-
-t = Timer(start=1)
-
-
-# In[ ]:
-
-t.end()
-
-
-# In[ ]:
-
-get_ipython().magic('mkdir test')
-
-
-# In[ ]:
-
-dforig[:2]
-
+# But despite the occasionaly and unpredictable worst case performance scenarios, the options temporary local DataFrame storage have been improving considerably for python, and there are fewer and fewer reasons to resort to CSV these days.
